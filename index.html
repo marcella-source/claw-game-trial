@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>RETRO CLAW GAME - 6 Doll Edition</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --pixel-font: 'Press Start 2P', cursive;
+      --machine-h: 60vh; 
+      --claw-x: 0px;
+      --claw-y: 0px;
+    }
+
+    body { 
+      margin: 0; background: #0a1118; overflow: hidden; 
+      font-family: var(--pixel-font); 
+      display: flex; flex-direction: column; align-items: center; justify-content: center; 
+      height: 100vh; 
+    }
+    
+    #title { font-size: 2.5vh; margin-bottom: 3vh; color: #ff7675; text-shadow: 4px 4px #000; }
+
+    #game-container {
+      position: relative; 
+      height: var(--machine-h);
+      aspect-ratio: 300 / 250;
+      background: #1a1a1a; border: 1vh solid #444;
+      box-shadow: 0 0 50px rgba(0,0,0,0.8), inset 0 0 60px #000;
+      overflow: hidden; /* 视觉裁剪 */
+    }
+
+    #score_ui { position: absolute; top: 2vh; right: 2vh; color: #fab1a0; z-index: 100; font-size: 1.2vh; }
+    
+    #claw_ui { 
+      position: absolute; width: 8vh; height: 8vh; z-index: 50; 
+      left: var(--claw-x); top: var(--claw-y);
+      transform: translate(-50%, -50%); 
+      display: none; background-size: contain; background-repeat: no-repeat;
+      background-image: url('assets/claw_open.png');
+    }
+    
+    #rope { 
+      position: absolute; top: 0; left: var(--claw-x); height: var(--claw-y);
+      width: 4px; background: linear-gradient(to right, #444, #888, #444); z-index: 45; 
+    }
+    
+    #video_input { position: fixed; width: 180px; bottom: 20px; right: 20px; border: 3px solid #fff; transform: scaleX(-1); z-index: 1000; opacity: 0.7; }
+    #chute_visual { position: absolute; bottom: 0; left: 0; width: 12vh; height: 12vh; background: #000; border: 2px solid #333; border-radius: 0 30px 0 0; z-index: 1; }
+  </style>
+</head>
+<body>
+
+  <div id="title">RETRO CLAW GAME</div>
+  <div id="game-container">
+    <div id="score_ui">SCORE: <span id="score_val">0</span></div>
+    <div id="chute_visual"></div>
+    <div id="claw_ui"></div>
+    <div id="rope"></div>
+  </div>
+  <video id="video_input" autoplay playsinline></video>
+
+  <script>
+    const { Engine, Render, Runner, Bodies, Composite, Constraint, Vector } = Matter;
+    const container = document.getElementById('game-container');
+    const engine = Engine.create();
+    
+    // 增加重力，让堆叠更扎实
+    engine.gravity.y = 2.0; 
+
+    function initGame() {
+      const rect = container.getBoundingClientRect();
+      const W = rect.width; 
+      const H = rect.height;
+
+      if (W < 10) { setTimeout(initGame, 100); return; }
+
+      const render = Render.create({
+        element: container, engine: engine,
+        options: { width: W, height: H, wireframes: false, background: 'transparent' }
+      });
+      Render.run(render);
+      Runner.run(Runner.create(), engine);
+
+      // 物理边界：加厚地板和墙壁，防止穿透
+      const wallOpts = { isStatic: true, friction: 1.0, render: { visible: false } };
+      Composite.add(engine.world, [
+        Bodies.rectangle(W/2, H+250, W+1000, 500, wallOpts),
+        Bodies.rectangle(-250, H/2, 500, H+1000, wallOpts),
+        Bodies.rectangle(W+250, H/2, 500, H+1000, wallOpts),
+        Bodies.rectangle(W/2, -250, W+1000, 500, wallOpts)
+      ]);
+
+      // 出货口传感器
+      const sensorSize = W * 0.15;
+      const goalSensor = Bodies.rectangle(sensorSize/2, H - sensorSize/2, sensorSize, sensorSize, { isStatic: true, isSensor: true, render: { visible: false } });
+      Composite.add(engine.world, goalSensor);
+
+      const dolls = [];
+      const dollAssets = [
+        'assets/doll1.png', 'assets/doll2.png', 'assets/doll3.png', 
+        'assets/doll4.png', 'assets/doll5.png', 'assets/doll6.png'
+      ];
+
+      // 核心修改：生成函数
+      function spawnDoll() {
+        const radius = H * 0.11; // 放大一倍的尺寸
+        const x = W * 0.4 + Math.random() * (W * 0.45); 
+        const y = -radius * 2; // 从顶部掉落
+        const randomImg = dollAssets[Math.floor(Math.random() * dollAssets.length)];
+        
+        const doll = Bodies.circle(x, y, radius, {
+          restitution: 0.05,    // 极低弹性：落地即停
+          friction: 0.9,       // 高摩擦力：方便堆叠
+          frictionStatic: 1.5, // 静态摩擦力：堆稳后不动
+          density: 0.05,       // 增加密度：重物感
+          label: 'doll',
+          render: {
+            sprite: {
+              texture: randomImg,
+              xScale: (radius * 2.2) / 50, 
+              yScale: (radius * 2.2) / 50
+            }
+          }
+        });
+        dolls.push(doll);
+        Composite.add(engine.world, doll);
+      }
+      
+      // 核心修改：延迟分批生成，防止重叠炸开
+      for(let i=0; i<8; i++) {
+        setTimeout(spawnDoll, i * 300); 
+      }
+
+      const claw = document.getElementById('claw_ui');
+      const scoreVal = document.getElementById('score_val');
+      let score = 0;
+      let activeConstraint = null;
+
+      const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+      hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7 });
+
+      hands.onResults((results) => {
+        // 计分
+        Composite.allBodies(engine.world).forEach(body => {
+          if (body.label === 'doll' && Matter.Bounds.overlaps(body.bounds, goalSensor.bounds)) {
+            score += 100; scoreVal.innerText = score;
+            body.label = 'ghost';
+            Composite.remove(engine.world, body);
+            setTimeout(spawnDoll, 1000);
+          }
+        });
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+          claw.style.display = 'block';
+          const h = results.multiHandLandmarks[0][8]; 
+          const t = results.multiHandLandmarks[0][4]; 
+
+          const nx = (1 - h.x - 0.2) / 0.6;
+          const ny = (h.y - 0.2) / 0.6;
+          const posX = Math.max(W*0.05, Math.min(W*0.95, nx * W));
+          const posY = Math.max(H*0.05, Math.min(H*0.95, ny * H));
+
+          container.style.setProperty('--claw-x', posX + 'px');
+          container.style.setProperty('--claw-y', posY + 'px');
+
+          const dist = Math.sqrt(Math.pow(h.x-t.x, 2) + Math.pow(h.y-t.y, 2));
+          if (dist < 0.08) {
+            claw.style.backgroundImage = "url('assets/claw.png')";
+            if (!activeConstraint) {
+              const grabRange = H * 0.18; // 适配大娃娃
+              const target = dolls.find(d => d.label==='doll' && Vector.magnitude(Vector.sub(d.position, {x: posX, y: posY})) < grabRange);
+              if (target) {
+                activeConstraint = Constraint.create({ 
+                  pointA: { x: posX, y: posY }, 
+                  bodyB: target, 
+                  stiffness: 0.5, // 增强抓取力
+                  length: 0 
+                });
+                Composite.add(engine.world, activeConstraint);
+              }
+            } else {
+              activeConstraint.pointA = { x: posX, y: posY };
+            }
+          } else {
+            claw.style.backgroundImage = "url('assets/claw_open.png')";
+            if (activeConstraint) {
+              Composite.remove(engine.world, activeConstraint);
+              activeConstraint = null;
+            }
+          }
+        } else {
+          claw.style.display = 'none';
+        }
+      });
+
+      const camera = new Camera(document.getElementById('video_input'), {
+        onFrame: async () => { await hands.send({image: document.getElementById('video_input')}); },
+        width: 640, height: 480
+      });
+      camera.start();
+    }
+    initGame();
+  </script>
+</body>
+</html>
